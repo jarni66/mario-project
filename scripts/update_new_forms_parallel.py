@@ -140,7 +140,8 @@ def process_one_file(file_info, existing_acsns, dbx_manager, record_workers):
     }
 
 
-def main():
+def get_parser():
+    """Build the argument parser (so run.py or others can reuse it)."""
     parser = argparse.ArgumentParser(
         description="Update new forms from Dropbox forms_table (parallel)."
     )
@@ -182,9 +183,16 @@ def main():
         action="store_true",
         help="Skip running parquet list refresh before main",
     )
-    args = parser.parse_args()
+    return parser
 
-    dbx_manager = DropboxManager(APP_KEY, APP_SECRET, REFRESH_TOKEN)
+
+def run(args, dbx_manager=None):
+    """
+    Run the update logic. If dbx_manager is None, create one (single auth).
+    Call this with a shared dbx_manager from run.py monitor to avoid re-auth each loop.
+    """
+    if dbx_manager is None:
+        dbx_manager = DropboxManager(APP_KEY, APP_SECRET, REFRESH_TOKEN)
 
     if not args.skip_refresh_parquet_list:
         print("Updating dropbox parquet list...")
@@ -257,6 +265,13 @@ def main():
         log_df.to_csv(args.log_csv, index=False)
         print(f"\nLog written to {args.log_csv} ({len(all_log_entries)} rows).")
     print(f"\nTotal processed: {total_processed}; errors: {total_errors}")
+
+
+def main(argv=None):
+    """Entrypoint when run as script. argv=None uses sys.argv."""
+    parser = get_parser()
+    args = parser.parse_args(argv)
+    run(args, dbx_manager=None)
 
 
 if __name__ == "__main__":

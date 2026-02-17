@@ -183,9 +183,15 @@ class DropboxManager:
             print(f"Stream upload failed: {e}")
             return None
 
+    # Max entries per list_folder request (Dropbox API cap)
+    LIST_FOLDER_LIMIT = 2000
+    CSV_WRITE_BATCH_SIZE = 500
+    PROGRESS_PRINT_INTERVAL = 10000
+
     def get_parquet_files(self, folder_path, output_csv="parquet_inventory.csv"):
         """
-        Retrieves .parquet files and saves them to CSV immediately upon finding them.
+        Retrieves .parquet files and saves them to CSV. Uses max page size for
+        fewer API round trips and batched writes for better performance.
         """
         print(f"Scanning for Parquet files in: {folder_path}...")
         print(f"Progress will be saved to: {output_csv}")
@@ -201,13 +207,20 @@ class DropboxManager:
             with open(output_csv, "w", newline="", encoding="utf-8") as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
+                batch = []
 
-                result = self.dbx.files_list_folder(folder_path, recursive=True)
+                def flush_batch():
+                    if batch:
+                        writer.writerows(batch)
+                        csvfile.flush()
+                        batch.clear()
 
                 def process_entries(entries):
                     nonlocal total_items_checked
                     for entry in entries:
                         total_items_checked += 1
+                        if total_items_checked % self.PROGRESS_PRINT_INTERVAL == 0 and total_items_checked > 0:
+                            print(f"--- Scanned {total_items_checked} items, {len(parquet_files)} parquet so far ---")
 
                         if isinstance(entry, dropbox.files.FileMetadata):
                             if entry.name.lower().endswith(".parquet"):
@@ -224,18 +237,23 @@ class DropboxManager:
                                 }
 
                                 parquet_files.append(row)
-                                writer.writerow(row)
-                                csvfile.flush()
-                                print(f"  [SAVED] {entry.path_display}")
+                                batch.append(row)
+                                if len(batch) >= self.CSV_WRITE_BATCH_SIZE:
+                                    flush_batch()
 
+                result = self.dbx.files_list_folder(
+                    folder_path, recursive=True, limit=self.LIST_FOLDER_LIMIT
+                )
                 process_entries(result.entries)
 
                 while result.has_more:
-                    print(f"--- Scanned {total_items_checked} items so far... ---")
                     result = self.dbx.files_list_folder_continue(result.cursor)
                     process_entries(result.entries)
 
+                flush_batch()
+
             print(f"\n[FINISHED] Total items scanned: {total_items_checked}")
+            print(f"[FINISHED] Parquet files found: {len(parquet_files)}")
             print(f"[FINISHED] CSV file finalized: {output_csv}")
             return parquet_files
 
